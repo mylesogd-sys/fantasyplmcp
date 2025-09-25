@@ -1,8 +1,18 @@
 # MCP Protocol Connection Guide
 
-Your FPL MCP server now supports **direct MCP protocol connections** via WebSocket for tools like n8n.
+Your FPL MCP server now supports **multiple transport methods** for MCP protocol connections, including HTTP and SSE for n8n compatibility.
 
 ## 🔌 **Connection Details**
+
+### **HTTP Endpoint (Recommended for n8n)**
+```
+POST https://fantasyplmcp.onrender.com/mcp/http
+```
+
+### **Server-Sent Events (SSE) Endpoint**
+```
+GET https://fantasyplmcp.onrender.com/mcp/sse
+```
 
 ### **WebSocket Endpoint**
 ```
@@ -10,13 +20,24 @@ wss://fantasyplmcp.onrender.com/mcp/ws
 ```
 
 ### **Protocol**
-- **Transport**: WebSocket
+- **Transport**: HTTP POST + SSE or WebSocket
 - **Protocol**: JSON-RPC 2.0
 - **MCP Version**: 2024-11-05
 
 ## 🛠️ **n8n MCP Tool Configuration**
 
-### **Connection Settings**
+### **Recommended HTTP Configuration**
+- **Server URL**: `https://fantasyplmcp.onrender.com/mcp/http`
+- **Transport Type**: `http`
+- **Protocol**: `mcp`
+- **Method**: `POST`
+
+### **Alternative SSE Configuration**
+- **SSE URL**: `https://fantasyplmcp.onrender.com/mcp/sse`
+- **Transport Type**: `sse`
+- **Protocol**: `mcp`
+
+### **WebSocket Configuration (if supported)**
 - **Server URL**: `wss://fantasyplmcp.onrender.com/mcp/ws`
 - **Transport Type**: `websocket`
 - **Protocol**: `mcp`
@@ -64,13 +85,28 @@ curl https://fantasyplmcp.onrender.com/mcp/info
 python test_mcp_connection.py
 ```
 
-### **3. Manual WebSocket Test**
-```javascript
-const ws = new WebSocket('wss://fantasyplmcp.onrender.com/mcp/ws');
+### **3. Manual HTTP Test**
+```bash
+curl -X POST https://fantasyplmcp.onrender.com/mcp/http \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2024-11-05",
+      "capabilities": { "resources": {}, "tools": {}, "prompts": {} },
+      "clientInfo": { "name": "Test Client", "version": "1.0.0" }
+    }
+  }'
+```
 
-ws.onopen = () => {
-    // Send initialize request
-    ws.send(JSON.stringify({
+### **4. JavaScript HTTP Test**
+```javascript
+fetch('https://fantasyplmcp.onrender.com/mcp/http', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
         method: "initialize",
@@ -79,31 +115,33 @@ ws.onopen = () => {
             capabilities: { resources: {}, tools: {}, prompts: {} },
             clientInfo: { name: "Test Client", version: "1.0.0" }
         }
-    }));
-};
-
-ws.onmessage = (event) => {
-    console.log('Response:', JSON.parse(event.data));
-};
+    })
+})
+.then(response => response.json())
+.then(data => console.log('Response:', data));
 ```
 
 ## 🎯 **Usage Examples**
 
-### **Read Current Gameweek**
-```json
-{
+### **Read Current Gameweek (HTTP)**
+```bash
+curl -X POST https://fantasyplmcp.onrender.com/mcp/http \
+  -H "Content-Type: application/json" \
+  -d '{
     "jsonrpc": "2.0",
     "id": 1,
     "method": "resources/read",
     "params": {
         "uri": "fpl://gameweeks/current"
     }
-}
+  }'
 ```
 
-### **Analyze Player Fixtures**
-```json
-{
+### **Analyze Player Fixtures (HTTP)**
+```bash
+curl -X POST https://fantasyplmcp.onrender.com/mcp/http \
+  -H "Content-Type: application/json" \
+  -d '{
     "jsonrpc": "2.0",
     "id": 2,
     "method": "tools/call",
@@ -114,12 +152,14 @@ ws.onmessage = (event) => {
             "num_fixtures": 5
         }
     }
-}
+  }'
 ```
 
-### **Compare Players**
-```json
-{
+### **Compare Players (HTTP)**
+```bash
+curl -X POST https://fantasyplmcp.onrender.com/mcp/http \
+  -H "Content-Type: application/json" \
+  -d '{
     "jsonrpc": "2.0",
     "id": 3,
     "method": "tools/call",
@@ -130,6 +170,56 @@ ws.onmessage = (event) => {
             "metrics": ["total_points", "goals_scored", "assists"]
         }
     }
+  }'
+```
+
+## 📝 **n8n Integration Steps**
+
+### **Step 1: Add MCP Node**
+1. In n8n workflow editor, add an **MCP** node
+2. Click on the node to configure
+
+### **Step 2: Configure Connection**
+- **Server URL**: `https://fantasyplmcp.onrender.com/mcp/http`
+- **Transport**: `HTTP`
+- **Content-Type**: `application/json`
+
+### **Step 3: Initialize Connection**
+First request should be initialization:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {
+      "resources": {},
+      "tools": {},
+      "prompts": {}
+    },
+    "clientInfo": {
+      "name": "n8n",
+      "version": "1.0.0"
+    }
+  }
+}
+```
+
+### **Step 4: Use FPL Tools**
+After initialization, call any available tool:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "analyze_player_fixtures",
+    "arguments": {
+      "player_name": "{{$json.player_name}}",
+      "num_fixtures": 5
+    }
+  }
 }
 ```
 
