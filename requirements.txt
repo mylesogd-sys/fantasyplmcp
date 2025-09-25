@@ -1,0 +1,8 @@
+mcp>=1.2.0
+httpx>=0.24.0
+python-dotenv
+diskcache
+jsonschema
+cryptography>=3.4.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0

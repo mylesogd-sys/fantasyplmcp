@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: fpl-mcp-server
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python web_server.py
+    plan: starter
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: PYTHONPATH
+        value: src
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: ENVIRONMENT
+        value: production
+    healthCheckPath: /health

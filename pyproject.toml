@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fpl-mcp"
+version = "0.1.6"
+description = "An MCP server for Fantasy Premier League data"
+readme = "README.md"
+authors = [
+    {name = "Fantasy PL MCP Contributors", email = "rishi.jatia96@gmail.com"},
+]
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+]
+keywords = ["fantasy-premier-league", "fpl", "mcp", "claude", "ai", "football", "soccer"]
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.2.0",
+    "httpx>=0.24.0",
+    "python-dotenv",
+    "diskcache",
+    "jsonschema",
+    "requests",
+    "cryptography",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "isort>=5.10.0",
+    "mypy>=1.0.0",
+    "build",
+    "twine",
+    "mcp[cli]>=1.2.0",
+]
+
+[project.scripts]
+fpl-mcp = "fpl_mcp.__main__:main"
+fpl-mcp-config = "fpl_mcp.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/rishijatia/fantasy-pl-mcp"
+Issues = "https://github.com/rishijatia/fantasy-pl-mcp/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
