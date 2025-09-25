@@ -15,7 +15,12 @@ from ..config import (
     FPL_HEADERS,
     STATIC_SCHEMA_PATH,
     RATE_LIMIT_MAX_REQUESTS,
-    RATE_LIMIT_PERIOD_SECONDS
+    RATE_LIMIT_PERIOD_SECONDS,
+    PROXY_ENABLED,
+    PROXY_LIST,
+    PROXY_ROTATION_ENABLED,
+    PROXY_MAX_RETRIES,
+    PROXY_TIMEOUT
 )
 
 # Set up logging
@@ -45,6 +50,19 @@ class FPLAPI:
             max_requests=RATE_LIMIT_MAX_REQUESTS,
             per_seconds=RATE_LIMIT_PERIOD_SECONDS
         )
+
+        # Initialize proxy settings
+        self.proxy_enabled = PROXY_ENABLED
+        self.proxy_list = PROXY_LIST.copy() if PROXY_LIST else []
+        self.proxy_rotation_enabled = PROXY_ROTATION_ENABLED
+        self.current_proxy_index = 0
+
+        if self.proxy_rotation_enabled:
+            logger.info(f"Proxy rotation enabled with {len(self.proxy_list)} proxies")
+        elif self.proxy_enabled:
+            logger.info("Proxy enabled but no proxy URLs configured")
+        else:
+            logger.info("Proxy disabled - using direct connections")
         
         # Load schema for bootstrap-static if available
         self.schema = None
@@ -56,9 +74,37 @@ class FPLAPI:
         except (FileNotFoundError, json.JSONDecodeError) as e:
             logger.warning(f"Could not load schema: {e}")
     
+    def _get_next_proxy(self) -> Optional[str]:
+        """Get the next proxy in rotation"""
+        if not self.proxy_rotation_enabled:
+            return None
+
+        if self.current_proxy_index >= len(self.proxy_list):
+            self.current_proxy_index = 0
+
+        proxy = self.proxy_list[self.current_proxy_index]
+        self.current_proxy_index += 1
+        return proxy
+
+    async def _make_request_with_proxy(self, url: str, proxy: str = None) -> Dict[str, Any]:
+        """Make a request with optional proxy"""
+        client_kwargs = {
+            "timeout": PROXY_TIMEOUT,
+            "follow_redirects": True
+        }
+
+        if proxy:
+            client_kwargs["proxies"] = proxy
+            logger.debug(f"Using proxy: {proxy}")
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            response = await client.get(url, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+
     async def _make_request(self, endpoint: str, max_retries: int = 3) -> Dict[str, Any]:
         """
-        Make an HTTP request to the FPL API with retry logic.
+        Make an HTTP request to the FPL API with proxy rotation and retry logic.
 
         Args:
             endpoint: API endpoint to request (without base URL)
@@ -71,48 +117,88 @@ class FPLAPI:
             httpx.HTTPError: On HTTP error
         """
         url = f"{self.base_url}/{endpoint}"
+        last_error = None
 
+        # First try without proxy (direct connection)
         for attempt in range(max_retries + 1):
-            # Acquire rate limit permission
             await self.rate_limiter.acquire()
 
-            logger.debug(f"Making request to {url} (attempt {attempt + 1})")
+            try:
+                logger.debug(f"Direct request to {url} (attempt {attempt + 1})")
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.get(url, headers=self.headers, follow_redirects=True)
                     response.raise_for_status()
                     return response.json()
 
-                except httpx.HTTPStatusError as e:
-                    logger.error(f"HTTP {e.response.status_code} error for {url}: {e.response.text}")
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                logger.warning(f"Direct request failed with HTTP {e.response.status_code}")
 
-                    if e.response.status_code == 403:
-                        if attempt < max_retries:
-                            # Exponential backoff with jitter for 403 errors
-                            delay = (2 ** attempt) + random.uniform(0, 1)
-                            logger.warning(f"403 Forbidden, retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries + 1})")
+                if e.response.status_code == 403:
+                    logger.info("403 Forbidden - will try proxy rotation if available")
+                    break  # Don't retry direct connection for 403, try proxies
+                elif attempt < max_retries:
+                    delay = (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(f"Retrying direct connection in {delay:.1f}s")
+                    await asyncio.sleep(delay)
+
+            except httpx.RequestError as e:
+                last_error = e
+                if attempt < max_retries:
+                    delay = (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(f"Request error, retrying in {delay:.1f}s: {str(e)}")
+                    await asyncio.sleep(delay)
+
+        # If direct connection failed with 403 and we have proxies, try proxy rotation
+        if self.proxy_rotation_enabled and isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code == 403:
+            logger.info("Trying proxy rotation to bypass 403 Forbidden")
+
+            for proxy_attempt in range(len(self.proxy_list)):
+                proxy = self._get_next_proxy()
+                if not proxy:
+                    break
+
+                for retry in range(PROXY_MAX_RETRIES):
+                    await self.rate_limiter.acquire()
+
+                    try:
+                        logger.debug(f"Proxy request to {url} via {proxy} (attempt {retry + 1})")
+                        result = await self._make_request_with_proxy(url, proxy)
+                        logger.info(f"✅ Success via proxy {proxy}")
+                        return result
+
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 403:
+                            logger.warning(f"Proxy {proxy} also got 403 Forbidden")
+                            break  # Try next proxy
+                        elif retry < PROXY_MAX_RETRIES - 1:
+                            delay = 1 + random.uniform(0, 0.5)
+                            logger.warning(f"Proxy request failed, retrying in {delay:.1f}s")
                             await asyncio.sleep(delay)
-                            continue
+
+                    except httpx.RequestError as e:
+                        logger.warning(f"Proxy {proxy} connection failed: {str(e)}")
+                        if retry < PROXY_MAX_RETRIES - 1:
+                            delay = 1 + random.uniform(0, 0.5)
+                            await asyncio.sleep(delay)
                         else:
-                            logger.error("FPL API returned 403 Forbidden after all retries. This may be due to:")
-                            logger.error("1. Rate limiting - requests are too frequent")
-                            logger.error("2. Geographic restrictions")
-                            logger.error("3. Missing or invalid headers")
-                            logger.error("4. IP blocking from server provider")
-                            logger.error("Try again later or check server logs.")
+                            break  # Try next proxy
 
-                    raise
+        # All attempts failed
+        if isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code == 403:
+            logger.error("❌ FPL API returned 403 Forbidden after trying all methods:")
+            logger.error("1. Direct connection failed")
+            if self.proxy_rotation_enabled:
+                logger.error(f"2. All {len(self.proxy_list)} proxies failed")
+            logger.error("This may be due to:")
+            logger.error("- Widespread IP blocking by FPL")
+            logger.error("- Geographic restrictions")
+            logger.error("- API maintenance or changes")
+            logger.error("Consider using a different proxy service or VPN")
 
-                except httpx.RequestError as e:
-                    if attempt < max_retries:
-                        delay = (2 ** attempt) + random.uniform(0, 1)
-                        logger.warning(f"Request error, retrying in {delay:.1f}s: {str(e)}")
-                        await asyncio.sleep(delay)
-                        continue
-                    else:
-                        logger.error(f"Request error after all retries for {url}: {str(e)}")
-                        raise
+        # Re-raise the last error
+        raise last_error
     
     def validate_data(self, data: Dict[str, Any], schema: Optional[Dict[str, Any]] = None) -> bool:
         """

@@ -50,3 +50,31 @@ RATE_LIMIT_PERIOD_SECONDS = int(os.getenv("RATE_LIMIT_PERIOD_SECONDS", "60"))
 
 # League configuration
 LEAGUE_RESULTS_LIMIT = 25
+
+# Proxy configuration for bypassing FPL API restrictions
+PROXY_ENABLED = os.getenv("PROXY_ENABLED", "true").lower() == "true"
+
+# Free proxy services (will be rotated)
+# These are public proxies - replace with your own for better reliability
+PROXY_LIST = [
+    # Public HTTP proxies (may be unstable)
+    "http://20.206.106.192:8123",
+    "http://103.149.162.194:80",
+    "http://47.74.152.29:8888",
+    "http://103.167.109.69:80",
+    "http://20.111.54.16:8123",
+    # Add your own reliable proxies here
+    # Commercial proxy services like:
+    # - ProxyMesh: "http://username:password@proxy.proxymesh.com:31280"
+    # - Bright Data: "http://username:password@zproxy.lum-superproxy.io:22225"
+    # - SmartProxy: "http://username:password@gate.smartproxy.com:10000"
+]
+
+# Load proxies from environment variable (comma-separated)
+if os.getenv("PROXY_URLS"):
+    PROXY_LIST.extend(os.getenv("PROXY_URLS").split(","))
+
+# Proxy rotation settings
+PROXY_ROTATION_ENABLED = len(PROXY_LIST) > 0 and PROXY_ENABLED
+PROXY_MAX_RETRIES = 2  # Max retries per proxy
+PROXY_TIMEOUT = 30  # Timeout per proxy request
