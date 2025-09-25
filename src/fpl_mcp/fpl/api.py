@@ -3,15 +3,18 @@ import asyncio
 import json
 import jsonschema
 import logging
+import time
+import random
 from typing import Any, Dict, List, Optional
 
 from .cache import cache, cached
 from .rate_limiter import RateLimiter
 from ..config import (
-    FPL_API_BASE_URL, 
-    FPL_USER_AGENT, 
-    STATIC_SCHEMA_PATH, 
-    RATE_LIMIT_MAX_REQUESTS, 
+    FPL_API_BASE_URL,
+    FPL_USER_AGENT,
+    FPL_HEADERS,
+    STATIC_SCHEMA_PATH,
+    RATE_LIMIT_MAX_REQUESTS,
     RATE_LIMIT_PERIOD_SECONDS
 )
 
@@ -23,23 +26,21 @@ class FPLAPI:
     FPL API client with schema validation, caching, and rate limiting.
     Handles fetching data from the Fantasy Premier League API.
     """
-    def __init__(self, 
+    def __init__(self,
                  base_url: str = FPL_API_BASE_URL,
                  schema_path: str = STATIC_SCHEMA_PATH,
-                 user_agent: str = FPL_USER_AGENT):
+                 headers: Dict[str, str] = None):
         """
         Initialize the FPL API client.
-        
+
         Args:
             base_url: FPL API base URL
             schema_path: Path to JSON schema for validation
-            user_agent: User-Agent header for requests
+            headers: Custom headers for requests (uses FPL_HEADERS by default)
         """
         self.base_url = base_url
         self.schema_path = schema_path
-        self.headers = {
-            "User-Agent": user_agent
-        }
+        self.headers = headers or FPL_HEADERS.copy()
         self.rate_limiter = RateLimiter(
             max_requests=RATE_LIMIT_MAX_REQUESTS,
             per_seconds=RATE_LIMIT_PERIOD_SECONDS
@@ -55,29 +56,63 @@ class FPLAPI:
         except (FileNotFoundError, json.JSONDecodeError) as e:
             logger.warning(f"Could not load schema: {e}")
     
-    async def _make_request(self, endpoint: str) -> Dict[str, Any]:
+    async def _make_request(self, endpoint: str, max_retries: int = 3) -> Dict[str, Any]:
         """
-        Make an HTTP request to the FPL API.
-        
+        Make an HTTP request to the FPL API with retry logic.
+
         Args:
             endpoint: API endpoint to request (without base URL)
-            
+            max_retries: Maximum number of retry attempts
+
         Returns:
             JSON response data
-            
+
         Raises:
             httpx.HTTPError: On HTTP error
         """
-        # Acquire rate limit permission
-        await self.rate_limiter.acquire()
-        
         url = f"{self.base_url}/{endpoint}"
-        logger.debug(f"Making request to {url}")
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=self.headers)
-            response.raise_for_status()
-            return response.json()
+
+        for attempt in range(max_retries + 1):
+            # Acquire rate limit permission
+            await self.rate_limiter.acquire()
+
+            logger.debug(f"Making request to {url} (attempt {attempt + 1})")
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                try:
+                    response = await client.get(url, headers=self.headers, follow_redirects=True)
+                    response.raise_for_status()
+                    return response.json()
+
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"HTTP {e.response.status_code} error for {url}: {e.response.text}")
+
+                    if e.response.status_code == 403:
+                        if attempt < max_retries:
+                            # Exponential backoff with jitter for 403 errors
+                            delay = (2 ** attempt) + random.uniform(0, 1)
+                            logger.warning(f"403 Forbidden, retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries + 1})")
+                            await asyncio.sleep(delay)
+                            continue
+                        else:
+                            logger.error("FPL API returned 403 Forbidden after all retries. This may be due to:")
+                            logger.error("1. Rate limiting - requests are too frequent")
+                            logger.error("2. Geographic restrictions")
+                            logger.error("3. Missing or invalid headers")
+                            logger.error("4. IP blocking from server provider")
+                            logger.error("Try again later or check server logs.")
+
+                    raise
+
+                except httpx.RequestError as e:
+                    if attempt < max_retries:
+                        delay = (2 ** attempt) + random.uniform(0, 1)
+                        logger.warning(f"Request error, retrying in {delay:.1f}s: {str(e)}")
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        logger.error(f"Request error after all retries for {url}: {str(e)}")
+                        raise
     
     def validate_data(self, data: Dict[str, Any], schema: Optional[Dict[str, Any]] = None) -> bool:
         """
